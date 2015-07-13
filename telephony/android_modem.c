@@ -51,7 +51,8 @@
 #endif
 
 #if DEBUG
-#  define  D(...)   do { if (D_ACTIVE) fprintf( stderr, __VA_ARGS__ ); } while (0)
+//#  define  D(...)   do { if (D_ACTIVE) fprintf( stderr, __VA_ARGS__ ); } while (0)
+#  define  D(...)   do { if (VERBOSE_CHECK(init)) dprint(__VA_ARGS__); } while (0)
 #  define  R(...)   do { if (R_ACTIVE) fprintf( stderr, __VA_ARGS__ ); } while (0)
 #else
 #  define  D(...)   ((void)0)
@@ -549,7 +550,7 @@ amodem_end_line_unsol( AModem  modem )
 {
     modem->out_buff[ modem->out_size ] = 0;
 
-    R(">> %s\n", quote(modem->out_buff));
+    D(">> %s\n", quote(modem->out_buff));
     if (modem->unsol_func) {
         modem->unsol_func( modem->unsol_opaque, modem->out_buff );
         modem->unsol_func( modem->unsol_opaque, "\r" );
@@ -571,7 +572,7 @@ amodem_end_line_reply( AModem  modem )
         strcat( modem->out_buff, "\rOK" );
     }
 
-    R(">> %s\n", quote(modem->out_buff));
+    D(">> %s\n", quote(modem->out_buff));
     if (modem->unsol_func) {
         modem->unsol_func( modem->unsol_opaque, modem->out_buff );
         modem->unsol_func( modem->unsol_opaque, "\r" );
@@ -842,8 +843,11 @@ amodem_init_rmnets()
         if ( !nd->used ||
              !nd->name ||
              strncmp( nd->name, "rmnet.", 6 ) ) {
+            D("%s: continue", __FUNCTION__);
             continue;
         }
+
+        D("%s: init rmnet %d, name: %s", __FUNCTION__, j, nd->name);
 
         ADataNet net = &_amodem_rmnets[j];
 
@@ -858,11 +862,15 @@ amodem_init_rmnets()
         memcpy(&net->gw.in6, &net->addr.in6, sizeof net->addr.in6);
         net->gw.in6.s6_addr32[3] = net->gw.in.s_addr;
 
+        D("%s: dns_addr_count: %d", __FUNCTION__, dns_addr_count);
         for ( k = 0; k < NUM_DNS_PER_RMNET && k < dns_addr_count; k++ ) {
+            D("%s: i=%d, k=%d", __FUNCTION__, i, k);
             ip = dns_addr[k];
             net->dns[k].in.s_addr = htonl(ip);
             memcpy(&net->dns[i].in6, &net->addr.in6, sizeof net->addr.in6);
             net->dns[i].in6.s6_addr32[3] = net->dns[i].in.s_addr;
+            //memcpy(&net->dns[k].in6, &net->addr.in6, sizeof net->addr.in6);
+            //net->dns[k].in6.s6_addr32[3] = net->dns[k].in.s_addr;
         }
 
         /* Data connections are down by default. */
@@ -872,6 +880,16 @@ amodem_init_rmnets()
     }
 
     _amodem_num_rmnets = j;
+    D("%s: _amodem_num_rmnets=%d", __FUNCTION__, _amodem_num_rmnets);
+
+    for ( i = 0; i < _amodem_num_rmnets; ++i ) {
+        ADataNet net = &_amodem_rmnets[i];
+        if ( net->context ) {
+            D("%s: net %d context NOT null", __FUNCTION__, i);
+        } else {
+            D("%s: net %d context null", __FUNCTION__, i);
+        }
+    }
 }
 
 static AModemRec   _android_modem[MAX_GSM_DEVICES];
@@ -1674,17 +1692,37 @@ amodem_set_gsm_location( AModem modem, int lac, int ci )
 /** Data
  **/
 
-static ADataNet
-amodem_acquire_data_conn( ADataContext context )
-{
+static void dump_amodem_rmnets() {
     int i;
 
     for ( i = 0; i < _amodem_num_rmnets; ++i ) {
         ADataNet net = &_amodem_rmnets[i];
         if ( net->context ) {
+            D("%s: net %d (name=%s) in use by id=%d, active=%d",
+                __FUNCTION__, i, net->nd->name, net->context->id, net->context->active);
+        } else {
+            D("%s: net %d (name=%s) not in use.", __FUNCTION__, i, net->nd->name);
+        }
+    }
+}
+
+static ADataNet
+amodem_acquire_data_conn( ADataContext context )
+{
+    int i;
+    D("%s", __FUNCTION__);
+
+    dump_amodem_rmnets();
+
+    for ( i = 0; i < _amodem_num_rmnets; ++i ) {
+        ADataNet net = &_amodem_rmnets[i];
+        if ( net->context ) {
+            D("%s: net %d (name=%s) in use by id=%d, active=%d",
+                __FUNCTION__, i, net->nd->name, net->context->id, net->context->active);
             continue;
         }
 
+        D("%s: found net %d (name=%s)", __FUNCTION__, i, net->nd->name);
         context->net = net;
         net->context = context;
         return net;
@@ -1696,6 +1734,8 @@ amodem_acquire_data_conn( ADataContext context )
 static void
 amodem_release_data_conn( ADataNet net )
 {
+    D("%s: name=%s", __FUNCTION__, net->nd->name);
+
     net->context->net = NULL;
     net->context = NULL;
 }
@@ -1703,6 +1743,7 @@ amodem_release_data_conn( ADataNet net )
 static const char*
 amodem_setup_pdp( ADataContext context )
 {
+    D("%s: data->id=%d", __FUNCTION__, context->id);
     if ( context->active ) {
         return "OK";
     }
@@ -1727,6 +1768,7 @@ err:
 static const char*
 amodem_teardown_pdp( ADataContext context )
 {
+    D("%s: data->id=%d", __FUNCTION__, context->id);
     if ( !context->active ) {
         return "OK";
     }
@@ -1743,6 +1785,8 @@ amodem_activate_data_call( AModem  modem, int cid, int enable)
 {
     ADataContext     data;
     int              id;
+
+    D("%s: cid=%d enable=%d", __FUNCTION__, cid, enable);
 
     assert( enable ==  0 || enable == 1 );
 
@@ -4157,7 +4201,7 @@ int  amodem_send( AModem  modem, const char*  cmd )
         /* R( "-- %s\n", quote(cmd) ); */
         return modem->wait_sms;
     }
-    R( "<< %s\n", quote(cmd) );
+    D( "<< %s\n", quote(cmd) );
 
     cmd += 2;
 
